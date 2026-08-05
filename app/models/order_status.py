@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class OrderStatus(str, Enum):
     PLACED = "PLACED"
     ACCEPTED = "ACCEPTED"
@@ -9,4 +10,3 @@ class OrderStatus(str, Enum):
     ON_THE_WAY = "ON_THE_WAY"
     DELIVERED = "DELIVERED"
     CANCELLED = "CANCELLED"
-    

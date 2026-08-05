@@ -28,10 +28,12 @@ class Restaurant(Base):
 
     menu_items = relationship(
         "Menu",
-        back_populates="restaurant"
+        back_populates="restaurant",
+        cascade="all, delete-orphan"
     )
 
     orders = relationship(
         "Order",
-        back_populates="restaurant"
+        back_populates="restaurant",
+        cascade="all, delete-orphan"
     )

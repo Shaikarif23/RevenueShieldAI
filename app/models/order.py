@@ -38,43 +38,44 @@ class Order(Base):
         DateTime(timezone=True),
         server_default=func.now()
     )
+
     customer = relationship(
-    "Customer",
-    back_populates="orders"
+        "Customer",
+        back_populates="orders"
     )
 
     restaurant = relationship(
-    "Restaurant",
-    back_populates="orders"
+        "Restaurant",
+        back_populates="orders"
     )
 
     delivery_partner = relationship(
-    "DeliveryPartner",
-    back_populates="orders"
+        "DeliveryPartner",
+        back_populates="orders"
     )
-
 
     order_items = relationship(
         "OrderItem",
         back_populates="order",
         cascade="all, delete-orphan"
     )
-tracking_history = relationship(
-    "Tracking",
-    back_populates="order",
-    cascade="all, delete-orphan"
-)
 
-cancellation = relationship(
-    "Cancellation",
-    back_populates="order",
-    uselist=False,
-    cascade="all, delete-orphan"
-)
+    tracking_history = relationship(
+        "Tracking",
+        back_populates="order",
+        cascade="all, delete-orphan"
+    )
 
-revenue = relationship(
-    "RevenueLeakage",
-    back_populates="order",
-    uselist=False,
-    cascade="all, delete-orphan"
-)    
+    cancellation = relationship(
+        "Cancellation",
+        back_populates="order",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
+
+    revenue = relationship(
+        "RevenueLeakage",
+        back_populates="order",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )

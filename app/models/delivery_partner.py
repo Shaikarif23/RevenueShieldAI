@@ -15,14 +15,22 @@ class DeliveryPartner(Base):
 
     vehicle_number = Column(String(30))
 
-    current_status = Column(String(20), default="AVAILABLE")
+    current_status = Column(
+        String(20),
+        default="AVAILABLE"
+    )
 
     current_latitude = Column(Float)
 
     current_longitude = Column(Float)
 
-    user = relationship("User", back_populates="delivery_partner")
-orders = relationship(
-    "Order",
-    back_populates="delivery_partner"
-)    
+    user = relationship(
+        "User",
+        back_populates="delivery_partner"
+    )
+
+    orders = relationship(
+        "Order",
+        back_populates="delivery_partner",
+        cascade="all, delete-orphan"
+    )

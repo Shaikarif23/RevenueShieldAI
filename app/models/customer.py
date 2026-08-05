@@ -19,8 +19,13 @@ class Customer(Base):
 
     longitude = Column(Float)
 
-    user = relationship("User", back_populates="customer")
-orders = relationship(
-    "Order",
-    back_populates="customer"
-)    
+    user = relationship(
+        "User",
+        back_populates="customer"
+    )
+
+    orders = relationship(
+        "Order",
+        back_populates="customer",
+        cascade="all, delete-orphan"
+    )

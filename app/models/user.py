@@ -20,11 +20,22 @@ class User(Base):
 
     role = Column(String(20), nullable=False)
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
 
-    restaurant = relationship("Restaurant", back_populates="user", uselist=False)
+    restaurant = relationship(
+        "Restaurant",
+        back_populates="user",
+        uselist=False
+    )
 
-    customer = relationship("Customer", back_populates="user", uselist=False)
+    customer = relationship(
+        "Customer",
+        back_populates="user",
+        uselist=False
+    )
 
     delivery_partner = relationship(
         "DeliveryPartner",

@@ -23,6 +23,13 @@ class Menu(Base):
 
     is_available = Column(String(10), default="YES")
 
-    restaurant = relationship("Restaurant", back_populates="menu_items")
+    restaurant = relationship(
+        "Restaurant",
+        back_populates="menu_items"
+    )
 
-    order_items = relationship("OrderItem", back_populates="menu")
+    order_items = relationship(
+        "OrderItem",
+        back_populates="menu",
+        cascade="all, delete-orphan"
+    )
