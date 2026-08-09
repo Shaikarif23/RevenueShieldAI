@@ -1,5 +1,5 @@
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, HTTPException
@@ -847,26 +847,25 @@ def get_dashboard_data(
     # GET ORDERS
     # ======================================================
 
-    orders = (
-        db.query(Order)
-        .all()
-    )
+    # Push filters into SQL so the dashboard does not load every order
+    # into Python on every request.
+    query = db.query(Order)
 
-    # Apply filters in Python so this remains compatible with
-    # the current Order model regardless of the exact date field.
-    filtered_orders = [
-        order
-        for order in orders
-        if (
-            restaurant_id is None
-            or order.restaurant_id == restaurant_id
+    if restaurant_id is not None:
+        query = query.filter(Order.restaurant_id == restaurant_id)
+
+    if from_date is not None:
+        query = query.filter(Order.created_at >= from_date)
+
+    if to_date is not None:
+        # Include the complete end date when created_at is a datetime.
+        end_exclusive = datetime.combine(
+            to_date + timedelta(days=1),
+            datetime.min.time(),
         )
-        and order_matches_date_filter(
-            order,
-            from_date,
-            to_date
-        )
-    ]
+        query = query.filter(Order.created_at < end_exclusive)
+
+    filtered_orders = query.all()
 
     # ======================================================
     # DELIVERED ORDERS
@@ -1307,6 +1306,12 @@ def dashboard_overview(
     )
 
     # ======================================================
+    # ALERTS
+    # ======================================================
+
+    alerts = build_alerts(anomalies)
+
+    # ======================================================
     # RECENT ANOMALIES
     # ======================================================
 
@@ -1322,20 +1327,19 @@ def dashboard_overview(
             risk_level
         ),
 
-        "summary":
-            summary,
+        "summary": summary,
 
-        "risk_summary":
-            risk_summary,
+        "risk_summary": risk_summary,
 
-        "top_leaked_orders":
-            top_leaked_orders,
+        "top_leaked_orders": top_leaked_orders,
 
-        "restaurant_leakage":
-            restaurant_leakage,
+        "restaurant_leakage": restaurant_leakage,
 
-        "recent_anomalies":
-            recent_anomalies
+        "recent_anomalies": recent_anomalies,
+
+        # Returning alerts with overview keeps the dashboard
+        # self-contained and avoids a second network request.
+        "alerts": alerts,
     }
 
 

@@ -1,10 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { useDashboard } from "../hooks/useDashboard";
-import {
-  getRestaurants,
-  getAlerts,
-} from "../services/dashboardService";
+import { getRestaurants } from "../services/dashboardService";
 
 import { getApiError } from "../services/api";
 
@@ -51,19 +48,6 @@ export default function Dashboard() {
   const [restaurants, setRestaurants] = useState([]);
 
   const [restaurantError, setRestaurantError] =
-    useState("");
-
-
-  // =========================================================
-  // ALERTS
-  // =========================================================
-
-  const [alerts, setAlerts] = useState([]);
-
-  const [alertsLoading, setAlertsLoading] =
-    useState(false);
-
-  const [alertsError, setAlertsError] =
     useState("");
 
 
@@ -117,77 +101,6 @@ export default function Dashboard() {
       mounted = false;
     };
   }, []);
-
-
-  // =========================================================
-  // LOAD ALERTS
-  //
-  // IMPORTANT:
-  // Alerts are NOT returned by /dashboard/overview.
-  //
-  // Therefore we explicitly call:
-  //
-  // GET /dashboard/alerts
-  //
-  // whenever the applied dashboard filters change.
-  // =========================================================
-
-  useEffect(() => {
-    let mounted = true;
-
-    async function loadAlerts() {
-      try {
-        setAlertsLoading(true);
-        setAlertsError("");
-
-        const result = await getAlerts(
-          appliedFilters
-        );
-
-        if (!mounted) {
-          return;
-        }
-
-        /*
-         * Backend response:
-         *
-         * {
-         *   success: true,
-         *   total_alerts: 2,
-         *   critical_alerts: 1,
-         *   high_alerts: 0,
-         *   medium_alerts: 1,
-         *   alerts: [...]
-         * }
-         */
-
-        setAlerts(result?.alerts || []);
-      } catch (err) {
-        if (!mounted) {
-          return;
-        }
-
-        setAlerts([]);
-
-        setAlertsError(
-          getApiError(
-            err,
-            "Unable to load alerts."
-          )
-        );
-      } finally {
-        if (mounted) {
-          setAlertsLoading(false);
-        }
-      }
-    }
-
-    loadAlerts();
-
-    return () => {
-      mounted = false;
-    };
-  }, [appliedFilters]);
 
 
   // =========================================================
@@ -457,70 +370,9 @@ export default function Dashboard() {
         />
 
 
-        {/* =================================================
-            ALERTS SECTION
-        ================================================== */}
-
-        {alertsLoading ? (
-          <div className="panel">
-
-            <div className="panel-heading">
-
-              <div>
-
-                <h3>
-                  Alerts & Recommendations
-                </h3>
-
-                <span>
-                  Actions generated from
-                  detected anomalies
-                </span>
-
-              </div>
-
-            </div>
-
-            <div className="empty-inline">
-              Loading alerts...
-            </div>
-
-          </div>
-
-        ) : alertsError ? (
-
-          <div className="panel">
-
-            <div className="panel-heading">
-
-              <div>
-
-                <h3>
-                  Alerts & Recommendations
-                </h3>
-
-                <span>
-                  Actions generated from
-                  detected anomalies
-                </span>
-
-              </div>
-
-            </div>
-
-            <div className="filter-error">
-              {alertsError}
-            </div>
-
-          </div>
-
-        ) : (
-
-          <AlertsPanel
-            alerts={alerts}
-          />
-
-        )}
+        <AlertsPanel
+          alerts={data?.alerts || []}
+        />
 
       </div>
 

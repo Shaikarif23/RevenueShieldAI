@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from app.routers import order
 from app.routers import restaurant
 from app.routers import auth
@@ -22,6 +23,19 @@ from app.routers import review
 app = FastAPI(
     title="RevenueShield AI",
     version="1.0.0"
+)
+
+# Allow the React frontend to call the API directly in local and deployed setups.
+# For production, replace these with the exact frontend origin(s).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 # Register Global Exception Handlers
 register_exception_handlers(app)
