@@ -4,116 +4,84 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.user import User
-from app.schemas.user import (
-    UserRegister,
-    UserResponse,
-    TokenResponse
-)
-from app.utils.security import hash_password, verify_password
+from app.schemas.user import TokenResponse, UserRegister, UserResponse
 from app.utils.jwt_handler import create_access_token
+from app.utils.security import hash_password, verify_password
 
-router = APIRouter(
-    prefix="/auth",
-    tags=["Authentication"]
-)
+router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+ALLOWED_REGISTRATION_ROLES = {"CUSTOMER", "RESTAURANT", "DELIVERY_PARTNER"}
 
 
 @router.post(
     "/register",
     response_model=UserResponse,
-    status_code=status.HTTP_201_CREATED
+    status_code=status.HTTP_201_CREATED,
 )
-def register_user(
-    user: UserRegister,
-    db: Session = Depends(get_db)
-):
-    # Check if email already exists
-    existing_user = (
-        db.query(User)
-        .filter(User.email == user.email)
-        .first()
-    )
+def register_user(user: UserRegister, db: Session = Depends(get_db)):
+    email = str(user.email).lower().strip()
+    role = user.role.upper().strip()
 
-    if existing_user:
+    if role not in ALLOWED_REGISTRATION_ROLES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            detail="Invalid registration role. ADMIN accounts must be provisioned by an administrator.",
         )
 
-    # Hash password
-    hashed_password = hash_password(user.password)
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered",
+        )
 
-    # Create new user
     new_user = User(
-    name=user.name,
-    email=user.email,
-    password=hash_password(user.password),
-    role=user.role,
-    phone=user.phone
+        name=user.name.strip(),
+        email=email,
+        password=hash_password(user.password),
+        role=role,
+        phone=user.phone,
     )
 
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-
     return new_user
 
 
-@router.post(
-    "/login",
-    response_model=TokenResponse
-)
+@router.post("/login", response_model=TokenResponse)
 def login_user(
     form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    print("=" * 60)
-    print("Login Attempt")
-    print("Username:", form_data.username)
-
-    # Find user by email
-    db_user = (
-        db.query(User)
-        .filter(User.email == form_data.username)
-        .first()
-    )
+    email = form_data.username.lower().strip()
+    db_user = db.query(User).filter(User.email == email).first()
 
     if db_user is None:
-        print("User not found")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
+            detail="Invalid email or password",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
-    print("User Found:", db_user.email)
-    print("Stored Hash:", db_user.password)
+    password_match = verify_password(form_data.password, db_user.password)
 
-    password_match = verify_password(
-        form_data.password,
-        db_user.password
-    )
-
-    print("Password Match:", password_match)
+    # Backward-compatible migration for the existing seed generator, which
+    # historically stored SeedPass123! as plaintext. The value is replaced
+    # with a bcrypt hash immediately after a successful legacy login.
+    if not password_match and db_user.password == form_data.password:
+        db_user.password = hash_password(form_data.password)
+        db.commit()
+        password_match = True
 
     if not password_match:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
+            detail="Invalid email or password",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Generate JWT
     access_token = create_access_token(
-        data={
-            "sub": db_user.email,
-            "role": db_user.role
-        }
+        {"sub": db_user.email, "role": db_user.role}
     )
 
-    print("Login Successful")
-    print("=" * 60)
-
-    return {
-        "access_token": access_token,
-        "token_type": "bearer"
-    }
-    
+    return {"access_token": access_token, "token_type": "bearer"}
