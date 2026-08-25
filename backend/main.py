@@ -14,6 +14,7 @@ from app.routers import (
     delivery_partner,
     menu,
     order,
+    order_create,
     order_item,
     payment,
     restaurant,
@@ -22,17 +23,11 @@ from app.routers import (
     tracking,
 )
 
-app = FastAPI(
-    title="RevenueShield AI",
-    version="1.0.0",
-)
+app = FastAPI(title="RevenueShield AI", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -44,9 +39,8 @@ register_middleware(app)
 app.include_router(auth.router)
 app.include_router(customer.router)
 
-# This role-scoped route must be registered before the legacy ADMIN-only
-# implementation in order.py so dashboard users receive data for their own
-# scope instead of an unnecessary 403.
+# Correct business-critical routes are registered before legacy implementations.
+app.include_router(order_create.router)
 app.include_router(revenue_access.router)
 app.include_router(order.router)
 
