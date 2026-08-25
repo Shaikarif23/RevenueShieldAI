@@ -1,32 +1,32 @@
-from fastapi import FastAPI, Depends
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import order
-from app.routers import restaurant
-from app.routers import auth
-from app.routers import delivery_partner
-from app.routers import customer
+
 from app.dependencies import get_current_user
-from app.models.user import User
-from app.routers import dashboard
-from app.routers import ai_insights
 from app.exceptions import register_exception_handlers
 from app.middleware import register_middleware
-from app.routers import menu
-from app.routers import order_item
-from app.routers import tracking
-from app.routers import cancellation
-from app.routers import payment
-from app.models.payment import Payment
-from app.routers import review
-
+from app.models.user import User
+from app.routers import (
+    ai_insights,
+    auth,
+    cancellation,
+    customer,
+    dashboard,
+    delivery_partner,
+    menu,
+    order,
+    order_item,
+    payment,
+    restaurant,
+    review,
+    revenue_access,
+    tracking,
+)
 
 app = FastAPI(
     title="RevenueShield AI",
-    version="1.0.0"
+    version="1.0.0",
 )
 
-# Allow the React frontend to call the API directly in local and deployed setups.
-# For production, replace these with the exact frontend origin(s).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -37,13 +37,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Register Global Exception Handlers
+
 register_exception_handlers(app)
 register_middleware(app)
 
 app.include_router(auth.router)
 app.include_router(customer.router)
+
+# This role-scoped route must be registered before the legacy ADMIN-only
+# implementation in order.py so dashboard users receive data for their own
+# scope instead of an unnecessary 403.
+app.include_router(revenue_access.router)
 app.include_router(order.router)
+
 app.include_router(restaurant.router)
 app.include_router(delivery_partner.router)
 app.include_router(dashboard.router)
@@ -58,7 +64,13 @@ app.include_router(review.router)
 
 @app.get("/")
 def home():
-    return {"message": "RevenueShield AI Running"}
+    return {"message": "Revenue Shield AI Running"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "revenueshield-api"}
+
 
 @app.get("/me")
 def get_me(current_user: User = Depends(get_current_user)):
@@ -66,5 +78,5 @@ def get_me(current_user: User = Depends(get_current_user)):
         "id": current_user.id,
         "name": current_user.name,
         "email": current_user.email,
-        "role": current_user.role
+        "role": current_user.role,
     }
