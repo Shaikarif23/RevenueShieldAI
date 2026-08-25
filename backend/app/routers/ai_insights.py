@@ -2,439 +2,146 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import get_current_user
+from app.models.customer import Customer
+from app.models.delivery_partner import DeliveryPartner
 from app.models.order import Order
 from app.models.order_status import OrderStatus
 from app.models.payment import Payment
 from app.models.payment_status import PaymentStatus
+from app.models.restaurant import Restaurant
 from app.models.user import User
-from app.utils.roles import require_role
-
-
-router = APIRouter(
-    prefix="/ai",
-    tags=["AI RevenueShield"]
+from app.services.revenue_engine import (
+    build_leakage_record,
+    calculate_risk,
+    calculate_recommendation,
 )
 
+router = APIRouter(prefix="/ai", tags=["AI RevenueShield"])
 
-# ======================================================
-# BUILD ANOMALY
-# ======================================================
 
-def build_anomaly(
-    order: Order,
-    collected: float,
-    expected: float,
-):
-    reasons = []
-    score = 0
-    anomaly_type = None
+def _scoped_orders(db: Session, user: User):
+    query = db.query(Order)
+    if user.role == "ADMIN":
+        return query.all()
+    if user.role == "RESTAURANT":
+        owner = db.query(Restaurant).filter(Restaurant.user_id == user.id).first()
+        return query.filter(Order.restaurant_id == owner.id).all() if owner else []
+    if user.role == "CUSTOMER":
+        customer = db.query(Customer).filter(Customer.user_id == user.id).first()
+        return query.filter(Order.customer_id == customer.id).all() if customer else []
+    if user.role == "DELIVERY_PARTNER":
+        partner = db.query(DeliveryPartner).filter(DeliveryPartner.user_id == user.id).first()
+        return query.filter(Order.delivery_partner_id == partner.id).all() if partner else []
+    return []
 
-    # --------------------------------------------------
-    # DATA QUALITY ISSUE
-    # --------------------------------------------------
+
+def _payment_totals(db: Session, order_ids):
+    if not order_ids:
+        return {}
+    payments = db.query(Payment).filter(
+        Payment.order_id.in_(order_ids),
+        Payment.status == PaymentStatus.SUCCESS,
+    ).all()
+    totals = {}
+    for payment in payments:
+        totals[payment.order_id] = totals.get(payment.order_id, 0.0) + float(payment.amount or 0)
+    return totals
+
+
+def _anomaly(order: Order, collected: float):
+    expected = round(float(order.total_amount or 0), 2)
+    collected = round(float(collected or 0), 2)
 
     if order.status == OrderStatus.DELIVERED and expected <= 0:
+        return {
+            "order_id": order.id,
+            "restaurant_id": order.restaurant_id,
+            "status": order.status.value,
+            "anomaly_type": "DATA_QUALITY",
+            "expected_revenue": expected,
+            "collected_revenue": collected,
+            "leakage_amount": 0.0,
+            "risk_score": 0,
+            "risk_level": "MEDIUM",
+            "risk_reason": "Delivered order has zero or invalid expected revenue",
+            "recommendation": "Review order pricing and item data.",
+        }
 
-        reasons.append(
-            "Delivered order has zero expected revenue"
-        )
-
-        score = 50
-        anomaly_type = "DATA_QUALITY"
-
-    # --------------------------------------------------
-    # REVENUE LEAKAGE
-    # --------------------------------------------------
-
-    elif (
-        order.status == OrderStatus.DELIVERED
-        and expected > collected
-    ):
-
-        reasons.append(
-            "Delivered order has unpaid revenue"
-        )
-
-        score = 60 if collected == 0 else 40
-        anomaly_type = "REVENUE_LEAKAGE"
-
-    # --------------------------------------------------
-    # CANCELLED ORDER WITH PAYMENT
-    # --------------------------------------------------
-
-    elif (
-        order.status == OrderStatus.CANCELLED
-        and collected > 0
-    ):
-
-        reasons.append(
-            "Cancelled order has successful payment"
-        )
-
-        score = 70
-        anomaly_type = "REVENUE_LEAKAGE"
-
-    # --------------------------------------------------
-    # HIGH VALUE ORDER
-    # --------------------------------------------------
-
-    if expected >= 1000:
-
-        reasons.append(
-            "High-value order"
-        )
-
-        score += 20
-
-        if anomaly_type is None:
-            anomaly_type = "HIGH_VALUE"
-
-    # --------------------------------------------------
-    # NO ANOMALY
-    # --------------------------------------------------
-
-    if not reasons:
+    if order.status != OrderStatus.DELIVERED or expected <= collected:
+        if order.status == OrderStatus.CANCELLED and collected > 0:
+            return {
+                "order_id": order.id,
+                "restaurant_id": order.restaurant_id,
+                "status": order.status.value,
+                "anomaly_type": "CANCELLED_WITH_PAYMENT",
+                "expected_revenue": expected,
+                "collected_revenue": collected,
+                "leakage_amount": 0.0,
+                "risk_score": 70,
+                "risk_level": "HIGH",
+                "risk_reason": "Cancelled order has successful payment",
+                "recommendation": "Verify refund or settlement status.",
+            }
         return None
 
-    # --------------------------------------------------
-    # RISK LEVEL
-    # --------------------------------------------------
-
-    risk = "LOW"
-
-    if score >= 70:
-        risk = "HIGH"
-
-    elif score >= 40:
-        risk = "MEDIUM"
-
-    # --------------------------------------------------
-    # RESPONSE
-    # --------------------------------------------------
-
+    leakage = round(expected - collected, 2)
+    risk = calculate_risk(expected, collected)
     return {
         "order_id": order.id,
         "restaurant_id": order.restaurant_id,
         "status": order.status.value,
-
-        "anomaly_type": anomaly_type,
-
-        "expected_revenue": round(
-            expected,
-            2
-        ),
-
-        "collected_revenue": round(
-            collected,
-            2
-        ),
-
-        "leakage_amount": round(
-            max(expected - collected, 0),
-            2
-        ),
-
-        "risk_score": min(
-            score,
-            100
-        ),
-
-        "risk_level": risk,
-
-        "reasons": reasons
+        "anomaly_type": "REVENUE_LEAKAGE",
+        "expected_revenue": expected,
+        "collected_revenue": collected,
+        "leakage_amount": leakage,
+        "leakage_percentage": round((leakage / expected) * 100, 2),
+        "risk_score": risk["risk_score"],
+        "risk_level": risk["risk_level"],
+        "risk_reason": risk["risk_reason"],
+        "recommendation": calculate_recommendation(risk["risk_level"], leakage),
     }
 
 
-# ======================================================
-# AI INSIGHTS
-# ======================================================
+def _build_response(db: Session, user: User):
+    orders = _scoped_orders(db, user)
+    totals = _payment_totals(db, [o.id for o in orders])
+    anomalies = []
+
+    for order in orders:
+        item = _anomaly(order, totals.get(order.id, 0.0))
+        if item:
+            anomalies.append(item)
+
+    delivered = [o for o in orders if o.status == OrderStatus.DELIVERED]
+    expected = round(sum(float(o.total_amount or 0) for o in delivered), 2)
+    collected = round(sum(totals.get(o.id, 0.0) for o in delivered), 2)
+    leakage = max(round(expected - collected, 2), 0.0)
+
+    return {
+        "success": True,
+        "summary": {
+            "total_orders": len(orders),
+            "delivered_orders": len(delivered),
+            "expected_revenue": expected,
+            "collected_revenue": collected,
+            "revenue_leakage": leakage,
+            "leakage_percentage": round((leakage / expected) * 100, 2) if expected else 0.0,
+            "total_anomalies": len(anomalies),
+            "high_risk_anomalies": sum(a["risk_level"] == "HIGH" for a in anomalies),
+            "medium_risk_anomalies": sum(a["risk_level"] == "MEDIUM" for a in anomalies),
+            "low_risk_anomalies": sum(a["risk_level"] == "LOW" for a in anomalies),
+        },
+        "anomalies": sorted(anomalies, key=lambda x: (x["risk_score"], x["leakage_amount"]), reverse=True),
+    }
+
 
 @router.get("/insights")
-def revenue_ai_insights(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(
-        require_role("ADMIN")
-    )
-):
+def revenue_ai_insights(db: Session = Depends(get_db), current_user: User = Depends(__import__("app.dependencies", fromlist=["get_current_user"]).get_current_user)):
+    return _build_response(db, current_user)
 
-    orders = db.query(Order).all()
-
-    anomalies = []
-
-    # ==================================================
-    # CHECK EVERY ORDER
-    # ==================================================
-
-    for order in orders:
-
-        expected = float(
-            order.total_amount or 0
-        )
-
-        successful_payments = (
-            db.query(Payment)
-            .filter(
-                Payment.order_id == order.id,
-                Payment.status == PaymentStatus.SUCCESS
-            )
-            .all()
-        )
-
-        collected = sum(
-            float(payment.amount or 0)
-            for payment in successful_payments
-        )
-
-        anomaly = build_anomaly(
-            order=order,
-            collected=collected,
-            expected=expected
-        )
-
-        if anomaly:
-            anomalies.append(anomaly)
-
-    # ==================================================
-    # ALL ORDERS - REPORTING ONLY
-    # ==================================================
-
-    total_expected = sum(
-        float(order.total_amount or 0)
-        for order in orders
-    )
-
-    all_successful_payments = (
-        db.query(Payment)
-        .filter(
-            Payment.status == PaymentStatus.SUCCESS
-        )
-        .all()
-    )
-
-    total_collected = sum(
-        float(payment.amount or 0)
-        for payment in all_successful_payments
-    )
-
-    # ==================================================
-    # ACTUAL REVENUE LEAKAGE
-    #
-    # ONLY DELIVERED ORDERS COUNT
-    # ==================================================
-
-    delivered_orders = [
-        order
-        for order in orders
-        if order.status == OrderStatus.DELIVERED
-    ]
-
-    delivered_expected = sum(
-        float(order.total_amount or 0)
-        for order in delivered_orders
-    )
-
-    delivered_order_ids = [
-        order.id
-        for order in delivered_orders
-    ]
-
-    delivered_collected = 0.0
-
-    if delivered_order_ids:
-
-        delivered_payments = (
-            db.query(Payment)
-            .filter(
-                Payment.order_id.in_(
-                    delivered_order_ids
-                ),
-                Payment.status == PaymentStatus.SUCCESS
-            )
-            .all()
-        )
-
-        delivered_collected = sum(
-            float(payment.amount or 0)
-            for payment in delivered_payments
-        )
-
-    # ==================================================
-    # REAL REVENUE GAP
-    # ==================================================
-
-    total_revenue_gap = max(
-        round(
-            delivered_expected
-            - delivered_collected,
-            2
-        ),
-        0
-    )
-
-    # ==================================================
-    # ANOMALY TYPES
-    # ==================================================
-
-    revenue_anomalies = [
-        anomaly
-        for anomaly in anomalies
-        if anomaly["anomaly_type"]
-        == "REVENUE_LEAKAGE"
-    ]
-
-    data_quality_anomalies = [
-        anomaly
-        for anomaly in anomalies
-        if anomaly["anomaly_type"]
-        == "DATA_QUALITY"
-    ]
-
-    high_value_anomalies = [
-        anomaly
-        for anomaly in anomalies
-        if anomaly["anomaly_type"]
-        == "HIGH_VALUE"
-    ]
-
-    # ==================================================
-    # RISK COUNTS
-    # ==================================================
-
-    high_risk = [
-        anomaly
-        for anomaly in anomalies
-        if anomaly["risk_level"] == "HIGH"
-    ]
-
-    medium_risk = [
-        anomaly
-        for anomaly in anomalies
-        if anomaly["risk_level"] == "MEDIUM"
-    ]
-
-    low_risk = [
-        anomaly
-        for anomaly in anomalies
-        if anomaly["risk_level"] == "LOW"
-    ]
-
-    # ==================================================
-    # FINAL RESPONSE
-    # ==================================================
-
-    return {
-        "success": True,
-
-        "summary": {
-
-            "total_orders": len(
-                orders
-            ),
-
-            "total_expected_revenue": round(
-                total_expected,
-                2
-            ),
-
-            "total_collected_revenue": round(
-                total_collected,
-                2
-            ),
-
-            # IMPORTANT:
-            # This is delivered-order leakage only.
-            "total_revenue_gap": total_revenue_gap,
-
-            "total_anomalies": len(
-                anomalies
-            ),
-
-            "revenue_anomalies": len(
-                revenue_anomalies
-            ),
-
-            "data_quality_anomalies": len(
-                data_quality_anomalies
-            ),
-
-            "high_value_anomalies": len(
-                high_value_anomalies
-            ),
-
-            "high_risk_anomalies": len(
-                high_risk
-            ),
-
-            "medium_risk_anomalies": len(
-                medium_risk
-            ),
-
-            "low_risk_anomalies": len(
-                low_risk
-            )
-        },
-
-        "anomalies": anomalies
-    }
-
-
-# ======================================================
-# GET ANOMALIES
-# ======================================================
 
 @router.get("/anomalies")
-def get_revenue_anomalies(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(
-        require_role("ADMIN")
-    )
-):
-
-    orders = db.query(Order).all()
-
-    anomalies = []
-
-    for order in orders:
-
-        expected = float(
-            order.total_amount or 0
-        )
-
-        successful_payments = (
-            db.query(Payment)
-            .filter(
-                Payment.order_id == order.id,
-                Payment.status == PaymentStatus.SUCCESS
-            )
-            .all()
-        )
-
-        collected = sum(
-            float(payment.amount or 0)
-            for payment in successful_payments
-        )
-
-        anomaly = build_anomaly(
-            order,
-            collected,
-            expected
-        )
-
-        if anomaly:
-            anomalies.append(anomaly)
-
-    # Highest risk first
-    anomalies.sort(
-        key=lambda item: item["risk_score"],
-        reverse=True
-    )
-
-    return {
-        "success": True,
-
-        "total_anomalies": len(
-            anomalies
-        ),
-
-        "anomalies": anomalies
-    }
+def get_revenue_anomalies(db: Session = Depends(get_db), current_user: User = Depends(__import__("app.dependencies", fromlist=["get_current_user"]).get_current_user)):
+    result = _build_response(db, current_user)
+    return {"success": True, "total_anomalies": len(result["anomalies"]), "anomalies": result["anomalies"]}
