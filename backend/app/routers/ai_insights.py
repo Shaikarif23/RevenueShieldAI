@@ -11,11 +11,7 @@ from app.models.payment import Payment
 from app.models.payment_status import PaymentStatus
 from app.models.restaurant import Restaurant
 from app.models.user import User
-from app.services.revenue_engine import (
-    build_leakage_record,
-    calculate_risk,
-    calculate_recommendation,
-)
+from app.services.revenue_engine import calculate_risk, calculate_recommendation
 
 router = APIRouter(prefix="/ai", tags=["AI RevenueShield"])
 
@@ -68,21 +64,22 @@ def _anomaly(order: Order, collected: float):
             "recommendation": "Review order pricing and item data.",
         }
 
+    if order.status == OrderStatus.CANCELLED and collected > 0:
+        return {
+            "order_id": order.id,
+            "restaurant_id": order.restaurant_id,
+            "status": order.status.value,
+            "anomaly_type": "CANCELLED_WITH_PAYMENT",
+            "expected_revenue": expected,
+            "collected_revenue": collected,
+            "leakage_amount": 0.0,
+            "risk_score": 70,
+            "risk_level": "HIGH",
+            "risk_reason": "Cancelled order has successful payment",
+            "recommendation": "Verify refund or settlement status.",
+        }
+
     if order.status != OrderStatus.DELIVERED or expected <= collected:
-        if order.status == OrderStatus.CANCELLED and collected > 0:
-            return {
-                "order_id": order.id,
-                "restaurant_id": order.restaurant_id,
-                "status": order.status.value,
-                "anomaly_type": "CANCELLED_WITH_PAYMENT",
-                "expected_revenue": expected,
-                "collected_revenue": collected,
-                "leakage_amount": 0.0,
-                "risk_score": 70,
-                "risk_level": "HIGH",
-                "risk_reason": "Cancelled order has successful payment",
-                "recommendation": "Verify refund or settlement status.",
-            }
         return None
 
     leakage = round(expected - collected, 2)
@@ -137,11 +134,21 @@ def _build_response(db: Session, user: User):
 
 
 @router.get("/insights")
-def revenue_ai_insights(db: Session = Depends(get_db), current_user: User = Depends(__import__("app.dependencies", fromlist=["get_current_user"]).get_current_user)):
+def revenue_ai_insights(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     return _build_response(db, current_user)
 
 
 @router.get("/anomalies")
-def get_revenue_anomalies(db: Session = Depends(get_db), current_user: User = Depends(__import__("app.dependencies", fromlist=["get_current_user"]).get_current_user)):
+def get_revenue_anomalies(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     result = _build_response(db, current_user)
-    return {"success": True, "total_anomalies": len(result["anomalies"]), "anomalies": result["anomalies"]}
+    return {
+        "success": True,
+        "total_anomalies": len(result["anomalies"]),
+        "anomalies": result["anomalies"],
+    }
